@@ -14,88 +14,120 @@ const io = new Server(httpServer, {
 });
 
 // Store the secret codes and corresponding socket IDs
-const secretCodes = {};
-const connections = {};
-
+const pendingRequests = {};
+const socketIds = {};
+const bindedSessions = {};
 
 // Generate a random 6-digit alphanumeric secret code
-function generateSecretCode() {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) {
-        code += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-    return code;
+function sleepFor(sleepDuration){
+    var now = new Date().getTime();
+    while(new Date().getTime() < now + sleepDuration){ /* Do nothing */ }
 }
 
-// Handle socket connections
-io.on('connection', (socket) => {
-    console.log('A user connected');
-    console.log(socket.handshake.query.type)
-    // Generate a secret code for the connected socket
-    
-    if ( socket.handshake.query.type === 'receiver' ) {
-        let secretCode = generateSecretCode();
-        console.log("SecretCode: ", secretCode)
-        secretCodes[secretCode] = {
-            "receiver": socket.id,
-            "sender": null,
-        };
-        io.to(socket.id).emit('secretCode', secretCode);
-    } else if ( socket.handshake.query.type === 'sender' ) {
-        let secretCode = socket.handshake.query.code;
-        try{
-            secretCodes[secretCode].sender = socket.id;
-        }catch(e){
-            console.log('Invalid secret code');
-            socket.emit('error', 'Invalid secret code');
-            socket.disconnect(true);
+// Route to handle the initial request with a secret code
+app.post('/request', (req, res) => {
+    const { secretCode } = req.body;
+
+    pendingRequests[secretCode] = {
+        "receiver": null,
+        "sender": null,
+    };
+
+    // Check if the secret code is valid (e.g., 6 digits)
+    if (!/^\d{6}$/.test(secretCode)) {
+        return res.status(400).json({ error: 'Invalid secret code' });
+    }
+
+    // Store the request in pendingRequests
+    pendingRequests[secretCode]["receiver"] = req;
+
+    // Wait for the second party to hit the same URL
+    // (You can implement a timeout here if needed)
+    for(let i = 0; i < 60; i++) {
+        const senderPartyRequest = pendingRequests[secretCode]["sender"];
+        if ( senderPartyRequest ) {
+            // The second party has confirmed the request
+            const senderPartySessionId = senderPartyRequest.session.id;
+            bindedSessions[senderPartySessionId + "-" + req.session.id] = true;
+
+            // Clean up pendingRequests
+            delete pendingRequests[secretCode];
+
+            // Respond with the session IDs
+            res.json({ sessionId: req.session.id, senderPartySessionId: senderPartySessionId });
             return;
+        } else {
+            i++;
+            sleepFor(1000)
         }
     }
-    
-    // Listen for incoming messages
-    socket.on('message', (data) => {
-        const { code, message } = data;
 
-        // Check if the secret code is valid
-        if (secretCodes[code]) {
-            // Get the socket ID of the recipient
-            if ( secretCodes[code].sender === socket.id ) {
-                let recipientSocketId = secretCodes[code]['receiver'];
+    // Respond with a success message
+    res.status(400).json({ message: 'Failed to connect to the device!' });
+});
+
+// Route to handle the second party's request with the same secret code
+app.post('/confirm', (req, res) => {
+    const { secretCode } = req.body;
+
+    // Check if the secret code is valid (e.g., 6 digits)
+    if (!/^\d{6}$/.test(secretCode)) {
+        return res.status(400).json({ error: 'Invalid secret code' });
+    }
+
+    // Retrieve the first party's request from pendingRequests
+    const receiverPartyRequest = pendingRequests[secretCode]["receiver"];
+
+    if (!receiverPartyRequest) {
+        return res.status(404).json({ error: 'No pending request found' });
+    }
+
+    // Create a session for both parties
+    const sessionId = req.session.id;
+    const receiverPartySessionId = receiverPartyRequest.session.id;
+
+    // Store socket IDs for both parties
+    socketIds[receiverPartySessionId] = null;
+    socketIds[sessionId] = null;
+
+    // Respond with the session IDs
+    res.json({ sessionId, receiverPartySessionId });
+
+    // Clean up pendingRequests (optional)
+    delete pendingRequests[secretCode];
+});
+
+// Socket.IO connection
+io.on('connection', (socket) => {
+    const sessionId = socket.request.session.id;
+
+    // Store the socket ID for the connected party
+    socketIds[sessionId] = socket.id;
+
+    // Listen for messages from the first party
+    socket.on('message', (data) => {
+        const { toSessionId, message } = data;
+
+        // Get the socket ID of the recipient
+        const recipientSocketId = socketIds[toSessionId];
+
+        if (recipientSocketId) {
+            if ( sessionId + "-" + toSessionId in bindedSessions && bindedSessions[sessionId + "-" + toSessionId]) {
                 // Send the message to the recipient
-                io.to(recipientSocketId).emit('message', message);
+                io.to(recipientSocketId).emit('message', { fromSessionId: sessionId, message });
+            } else {
+                console.log(`Session is not binded.`);
             }
         } else {
-            // Invalid secret code
-            socket.emit('error', 'Invalid secret code');
+            // Handle recipient not found (optional)
+            console.log(`Recipient with session ID ${toSessionId} not found.`);
         }
     });
 
-    // Handle socket disconnections
-    socket.on('disconnect', () => {
-        console.log('A user disconnected');
-            
-        // Find the secret code associated with the disconnected socket
-        const code = Object.keys(secretCodes).find((key) => {
-            const { receiver, sender } = secretCodes[key];
-            return receiver === socket.id || sender === socket.id;
-        });
-
-        if (code) {
-            // Disconnect both sender and receiver
-            const { receiver, sender } = secretCodes[code];
-
-            io.sockets.sockets.forEach((socket) => {
-                // If given socket id is exist in list of all sockets, kill it
-                if( socket.id === receiver || socket.id === sender )
-                    socket.disconnect(true);
-            });
-
-            // Remove the secret code from the storage
-            delete secretCodes[code];
-        }
-    });
+    socket.on("disconnect", (data) => {
+        console.log(`Socket ${socketIds[sessionId]} disconnected.`);
+        delete socketIds[sessionId];
+    })
 });
 
 httpServer.listen(3000, () => {
