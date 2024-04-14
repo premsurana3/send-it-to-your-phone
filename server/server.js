@@ -2,16 +2,27 @@
 // Create an Express app
 const express = require('express');
 const app = express();
-const sessions = require('express-sessions');
 const http = require('http');
 const httpServer = http.createServer(app);
 const { Server } = require("socket.io");
+const session = require('express-session');
+
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 const io = new Server(httpServer, {
     cors: {
         origin: ["http://localhost:3001"],
         credentials: true
     }
 });
+
+// Session middleware
+
+app.use(session({
+    secret: 'your-secret-key',
+    resave: false,
+    saveUninitialized: true
+}));
 
 // Store the secret codes and corresponding socket IDs
 const pendingRequests = {};
@@ -26,15 +37,19 @@ function sleepFor(sleepDuration){
 
 // Route to handle the initial request with a secret code
 app.post('/request', (req, res) => {
+
     const { secretCode } = req.body;
+    console.log("User requested to connect with secretCode: ", secretCode)
 
     pendingRequests[secretCode] = {
         "receiver": null,
         "sender": null,
     };
+    console.log("Pending requests: ", pendingRequests)
 
     // Check if the secret code is valid (e.g., 6 digits)
     if (!/^\d{6}$/.test(secretCode)) {
+        console.log("Invalid secret code")
         return res.status(400).json({ error: 'Invalid secret code' });
     }
 
@@ -49,6 +64,7 @@ app.post('/request', (req, res) => {
             // The second party has confirmed the request
             const senderPartySessionId = senderPartyRequest.session.id;
             bindedSessions[senderPartySessionId + "-" + req.session.id] = true;
+            console.log("Both parties confirmed the request. Bind the sessions: ", bindedSessions)
 
             // Clean up pendingRequests
             delete pendingRequests[secretCode];
@@ -57,7 +73,6 @@ app.post('/request', (req, res) => {
             res.json({ sessionId: req.session.id, senderPartySessionId: senderPartySessionId });
             return;
         } else {
-            i++;
             sleepFor(1000)
         }
     }
@@ -69,6 +84,8 @@ app.post('/request', (req, res) => {
 // Route to handle the second party's request with the same secret code
 app.post('/confirm', (req, res) => {
     const { secretCode } = req.body;
+
+    console.log("User confirmed to connect with secretCode: ", secretCode)
 
     // Check if the secret code is valid (e.g., 6 digits)
     if (!/^\d{6}$/.test(secretCode)) {
