@@ -220,8 +220,8 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 		SessionID:              sessionID,
 		ReceiverPartySessionID: receiverPartySessionID,
 	}
+	log.Println(sessionID)
+	log.Println(receiverPartySessionID)
+	log.Printf("User confirmed: %v", pendingRequests[secretCode])
 	json.NewEncoder(w).Encode(response)
-
-	// Clean up pendingRequests (optional)
-	cleanUpPendingRequest(secretCode)
 }
