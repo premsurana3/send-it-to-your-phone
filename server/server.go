@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -17,7 +18,7 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-var store = sessions.NewCookieStore([]byte("something-very-secret"))
+var store = sessions.NewFilesystemStore("./sessions", []byte("something-very-secret"))
 
 func main() {
 	router := mux.NewRouter()
@@ -26,6 +27,7 @@ func main() {
 	router.HandleFunc("/ws", handler).Methods("GET")
 	router.HandleFunc("/confirm", handleConfirm).Methods("POST")
 	router.HandleFunc("/request", handleRequest).Methods("POST")
+	router.HandleFunc("/findConnectedSessions", handleFindConnectedSessions).Methods("GET")
 	log.Println("Listening on 8080")
 	http.ListenAndServe("localhost:8080", router)
 
@@ -223,5 +225,29 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 	log.Println(sessionID)
 	log.Println(receiverPartySessionID)
 	log.Printf("User confirmed: %v", pendingRequests[secretCode])
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleFindConnectedSessions(w http.ResponseWriter, r *http.Request) {
+	// Get the session ID from the request
+	session, _ := store.Get(r, "session")
+	sessionID := session.ID
+
+	// Find all the connected sessions for the current session ID
+	connectedSessions := make([]string, 0)
+	for key := range bindedSessions {
+		if strings.Contains(key, sessionID) {
+			// Extract the connected session ID
+			connectedSessionID := strings.Replace(key, sessionID+"-", "", 1)
+			connectedSessions = append(connectedSessions, connectedSessionID)
+		}
+	}
+
+	// Respond with the connected sessions
+	response := struct {
+		ConnectedSessions []string `json:"connectedSessions"`
+	}{
+		ConnectedSessions: connectedSessions,
+	}
 	json.NewEncoder(w).Encode(response)
 }
